@@ -80,6 +80,32 @@ impl std::fmt::Display for Runtime {
     }
 }
 
+/// Get platform-specific installation instructions
+fn install_instructions() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => {
+            "Install a container runtime:\n\n\
+             Podman (recommended):\n  \
+             brew install podman\n  \
+             podman machine init\n  \
+             podman machine start\n\n\
+             Docker Desktop:\n  \
+             brew install --cask docker\n  \
+             # Then launch Docker.app"
+        }
+        "linux" => {
+            "Install a container runtime:\n\n\
+             Podman (recommended):\n  \
+             sudo apt install podman      # Ubuntu/Debian\n  \
+             sudo dnf install podman      # Fedora\n  \
+             sudo pacman -S podman        # Arch\n\n\
+             Docker:\n  \
+             See https://docs.docker.com/engine/install/"
+        }
+        _ => "Please install Docker or Podman for your platform.",
+    }
+}
+
 /// Detect the best available runtime, preferring Podman
 pub fn detect() -> Result<Runtime> {
     // Check for config override first
@@ -102,7 +128,7 @@ pub fn detect() -> Result<Runtime> {
         return Ok(Runtime::Docker);
     }
 
-    bail!("No container runtime found. Please install Docker or Podman.")
+    bail!("No container runtime found.\n\n{}", install_instructions())
 }
 
 #[cfg(test)]
