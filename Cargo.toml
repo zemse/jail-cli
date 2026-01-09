@@ -1,0 +1,16 @@
+[package]
+name = "jail"
+version = "0.1.0"
+edition = "2021"
+description = "Sandboxed dev environments via containers"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "5"
+anyhow = "1"
+which = "7"
+colored = "2"
+dirs = "6"
