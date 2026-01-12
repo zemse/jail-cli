@@ -366,6 +366,7 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
         "-it".to_string(),
         "--name".to_string(),
         container_name.clone(),
+        "--network=host".to_string(), // Expose all ports for dev servers
         "-v".to_string(),
         format!("{}:/workspace", workspace_dir.display()),
         "-w".to_string(),
