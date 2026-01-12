@@ -32,6 +32,9 @@ enum Commands {
         /// Name or filter for the jail (interactive selection if multiple match)
         name: Option<String>,
     },
+    /// Alias for enter
+    #[command(hide = true)]
+    Start { name: Option<String> },
     /// Remove a jail
     Remove {
         /// Name or filter for the jail (interactive selection if multiple match)
@@ -59,7 +62,7 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Clone { source, name } => jail::clone(&source, name.as_deref())?,
         Commands::List => jail::list()?,
-        Commands::Enter { name } => jail::enter(name.as_deref())?,
+        Commands::Enter { name } | Commands::Start { name } => jail::enter(name.as_deref())?,
         Commands::Remove { name } => jail::remove(name.as_deref())?,
         Commands::Code { name } => jail::code(&name)?,
         Commands::Status => jail::status()?,
