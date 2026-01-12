@@ -347,6 +347,14 @@ pub fn enter(name: &str) -> Result<()> {
         .status()
         .context("Failed to enter container")?;
 
+    // Stop container after exiting shell to free resources
+    println!("{} Stopping container...", "→".blue().bold());
+    let _ = Command::new(metadata.runtime.command())
+        .args(["stop", &container_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
     if !status.success() {
         bail!("Shell exited with error");
     }
