@@ -88,10 +88,11 @@ pub fn exists(runtime: Runtime) -> Result<bool> {
 /// Build the jail-dev image
 pub fn build(runtime: Runtime) -> Result<()> {
     println!(
-        "{} Building {} image (this may take a few minutes)...",
+        "{} Building {} image (one-time setup, may take a few minutes)...",
         "→".blue().bold(),
         IMAGE_NAME.cyan()
     );
+    println!("  This only happens once. Future jails will start instantly.");
 
     let mut child = Command::new(runtime.command())
         .args(["build", "-t", IMAGE_NAME, "-f", "-", "."])
