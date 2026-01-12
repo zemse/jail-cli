@@ -12,7 +12,7 @@ const DOCKERFILE: &str = r#"FROM ubuntu:24.04
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install base packages
+# Install base packages and VSCode Server dependencies
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
@@ -22,6 +22,16 @@ RUN apt-get update && apt-get install -y \
     vim \
     openssh-client \
     ca-certificates \
+    # VSCode Server dependencies
+    libxkbfile1 \
+    libsecret-1-0 \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libgtk-3-0 \
+    libgbm1 \
+    libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with sudo access

@@ -647,12 +647,13 @@ pub fn code(name: &str) -> Result<()> {
         name.cyan()
     );
 
-    // Convert container ID to hex for VSCode URI
+    // Use container ID for VSCode URI
     let hex_id = hex_encode(&container_id);
-    let uri = format!(
-        "vscode-remote://attached-container+{}/{}",
-        hex_id, metadata.workspace_dir
-    );
+    let workdir = format!("/{}", metadata.workspace_dir);
+    let uri = format!("vscode-remote://attached-container+{}{}", hex_id, workdir);
+
+    println!("  Container: {}", container_id.dimmed());
+    println!("  URI: {}", uri.dimmed());
 
     // Open VSCode
     let status = Command::new("code")
