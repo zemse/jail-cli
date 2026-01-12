@@ -153,12 +153,9 @@ pub fn clone(source: &str, name: Option<&str>) -> Result<()> {
         "✓".green().bold(),
         jail_name.cyan()
     );
-    println!(
-        "  Use '{}' to enter the jail",
-        format!("jail enter {}", jail_name).yellow()
-    );
 
-    Ok(())
+    // Auto-enter the jail
+    enter_jail(&jail_name)
 }
 
 /// Create an empty jail
@@ -190,12 +187,9 @@ pub fn create(name: &str) -> Result<()> {
         "✓".green().bold(),
         name.cyan()
     );
-    println!(
-        "  Use '{}' to enter the jail",
-        format!("jail enter {}", name).yellow()
-    );
 
-    Ok(())
+    // Auto-enter the jail
+    enter_jail(name)
 }
 
 /// Copy directory recursively
@@ -462,7 +456,12 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
 /// Enter a jail's shell
 pub fn enter(filter: Option<&str>) -> Result<()> {
     let name = select_jail(filter)?;
-    let jail_dir = jail_path(&name)?;
+    enter_jail(&name)
+}
+
+/// Internal function to enter a jail by name
+fn enter_jail(name: &str) -> Result<()> {
+    let jail_dir = jail_path(name)?;
 
     if !jail_dir.exists() {
         bail!("Jail '{}' not found", name);
@@ -473,9 +472,10 @@ pub fn enter(filter: Option<&str>) -> Result<()> {
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(&name, &jail_dir, metadata.runtime)?;
+    let container_id = get_or_create_container(name, &jail_dir, metadata.runtime)?;
 
     println!("{} Entering jail '{}'...", "→".blue().bold(), name.cyan());
+    println!("  Type '{}' to leave the jail", "exit".yellow());
 
     // Exec into container
     let status = Command::new(metadata.runtime.command())
