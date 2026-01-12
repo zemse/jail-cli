@@ -38,6 +38,9 @@ enum Commands {
     },
     /// List all jails
     List,
+    /// Alias for list
+    #[command(hide = true)]
+    Ls,
     /// Enter a jail's shell
     Enter {
         /// Name or filter for the jail (interactive selection if multiple match)
@@ -87,7 +90,7 @@ fn run() -> Result<()> {
             ports,
         } => jail::clone(&source, name.as_deref(), ports)?,
         Commands::Create { name, ports } => jail::create(&name, ports)?,
-        Commands::List => jail::list()?,
+        Commands::List | Commands::Ls => jail::list()?,
         Commands::Enter { name, ports } | Commands::Start { name, ports } => {
             jail::enter(name.as_deref(), ports)?
         }
