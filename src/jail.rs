@@ -493,11 +493,12 @@ fn create_container(
         args.push("--network=host".to_string());
     }
 
+    let container_workdir = format!("/{}", metadata.workspace_dir);
     args.extend([
         "-v".to_string(),
-        format!("{}:/workspace", workspace_dir.display()),
+        format!("{}:{}", workspace_dir.display(), container_workdir),
         "-w".to_string(),
-        "/workspace".to_string(),
+        container_workdir,
         "--user".to_string(),
         "dev".to_string(),
     ]);
@@ -648,7 +649,10 @@ pub fn code(name: &str) -> Result<()> {
 
     // Convert container ID to hex for VSCode URI
     let hex_id = hex_encode(&container_id);
-    let uri = format!("vscode-remote://attached-container+{}/workspace", hex_id);
+    let uri = format!(
+        "vscode-remote://attached-container+{}/{}",
+        hex_id, metadata.workspace_dir
+    );
 
     // Open VSCode
     let status = Command::new("code")
