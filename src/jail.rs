@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Select};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
@@ -248,6 +249,97 @@ fn is_container_running(name: &str, runtime: Runtime) -> Result<bool> {
     Ok(!output.stdout.is_empty())
 }
 
+/// Get all jail names
+fn get_jail_names() -> Result<Vec<String>> {
+    let jails = jails_dir()?;
+    let mut names = Vec::new();
+
+    if !jails.exists() {
+        return Ok(names);
+    }
+
+    for entry in std::fs::read_dir(&jails)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let jail_dir = entry.path();
+        let meta_path = jail_dir.join("jail.toml");
+
+        if meta_path.exists() {
+            let name = entry.file_name().to_string_lossy().replace('_', "/");
+            names.push(name);
+        }
+    }
+
+    Ok(names)
+}
+
+/// Filter jail names by a pattern (matches owner or repo name prefix)
+fn filter_jails(names: &[String], filter: &str) -> Vec<String> {
+    let filter_lower = filter.to_lowercase();
+    names
+        .iter()
+        .filter(|name| {
+            let name_lower = name.to_lowercase();
+            // Match if the full name starts with filter
+            if name_lower.starts_with(&filter_lower) {
+                return true;
+            }
+            // Match if owner or repo part starts with filter
+            if let Some((owner, repo)) = name_lower.split_once('/') {
+                return owner.starts_with(&filter_lower) || repo.starts_with(&filter_lower);
+            }
+            false
+        })
+        .cloned()
+        .collect()
+}
+
+/// Select a jail interactively, optionally filtered by a pattern
+fn select_jail(filter: Option<&str>) -> Result<String> {
+    let all_names = get_jail_names()?;
+
+    if all_names.is_empty() {
+        bail!("No jails found. Create one with: jail clone <url>");
+    }
+
+    let candidates = match filter {
+        Some(f) if !f.is_empty() => {
+            let filtered = filter_jails(&all_names, f);
+            if filtered.is_empty() {
+                bail!("No jails match filter '{}'", f);
+            }
+            // If exact match exists, return it directly
+            if filtered.len() == 1 || filtered.iter().any(|n| n.eq_ignore_ascii_case(f)) {
+                if let Some(exact) = filtered.iter().find(|n| n.eq_ignore_ascii_case(f)) {
+                    return Ok(exact.clone());
+                }
+                if filtered.len() == 1 {
+                    return Ok(filtered[0].clone());
+                }
+            }
+            filtered
+        }
+        _ => all_names,
+    };
+
+    // If only one candidate, return it directly
+    if candidates.len() == 1 {
+        return Ok(candidates[0].clone());
+    }
+
+    // Interactive selection
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select a jail")
+        .items(&candidates)
+        .default(0)
+        .interact()?;
+
+    Ok(candidates[selection].clone())
+}
+
 /// Get or create a container for a jail
 fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> Result<String> {
     let container_name = format!("jail-{}", sanitize_container_name(name));
@@ -325,8 +417,9 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
 }
 
 /// Enter a jail's shell
-pub fn enter(name: &str) -> Result<()> {
-    let jail_dir = jail_path(name)?;
+pub fn enter(filter: Option<&str>) -> Result<()> {
+    let name = select_jail(filter)?;
+    let jail_dir = jail_path(&name)?;
 
     if !jail_dir.exists() {
         bail!("Jail '{}' not found", name);
@@ -337,7 +430,7 @@ pub fn enter(name: &str) -> Result<()> {
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(name, &jail_dir, metadata.runtime)?;
+    let container_id = get_or_create_container(&name, &jail_dir, metadata.runtime)?;
 
     println!("{} Entering jail '{}'...", "→".blue().bold(), name.cyan());
 
@@ -363,8 +456,9 @@ pub fn enter(name: &str) -> Result<()> {
 }
 
 /// Remove a jail
-pub fn remove(name: &str) -> Result<()> {
-    let jail_dir = jail_path(name)?;
+pub fn remove(filter: Option<&str>) -> Result<()> {
+    let name = select_jail(filter)?;
+    let jail_dir = jail_path(&name)?;
 
     if !jail_dir.exists() {
         bail!("Jail '{}' not found", name);
@@ -374,7 +468,7 @@ pub fn remove(name: &str) -> Result<()> {
 
     // Try to stop and remove container
     if let Ok(metadata) = JailMetadata::load(&jail_dir) {
-        let container_name = format!("jail-{}", sanitize_container_name(name));
+        let container_name = format!("jail-{}", sanitize_container_name(&name));
 
         // Stop container (ignore errors)
         let _ = Command::new(metadata.runtime.command())

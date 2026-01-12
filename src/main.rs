@@ -29,13 +29,13 @@ enum Commands {
     List,
     /// Enter a jail's shell
     Enter {
-        /// Name of the jail
-        name: String,
+        /// Name or filter for the jail (interactive selection if multiple match)
+        name: Option<String>,
     },
     /// Remove a jail
     Remove {
-        /// Name of the jail
-        name: String,
+        /// Name or filter for the jail (interactive selection if multiple match)
+        name: Option<String>,
     },
     /// Open VSCode attached to a jail's container
     Code {
@@ -59,8 +59,8 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Clone { source, name } => jail::clone(&source, name.as_deref())?,
         Commands::List => jail::list()?,
-        Commands::Enter { name } => jail::enter(&name)?,
-        Commands::Remove { name } => jail::remove(&name)?,
+        Commands::Enter { name } => jail::enter(name.as_deref())?,
+        Commands::Remove { name } => jail::remove(name.as_deref())?,
         Commands::Code { name } => jail::code(&name)?,
         Commands::Status => jail::status()?,
     }
