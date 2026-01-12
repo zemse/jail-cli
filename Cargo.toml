@@ -1,9 +1,13 @@
 [package]
-name = "jail"
+name = "jail-cli"
 version = "0.1.0"
 edition = "2021"
 description = "Sandboxed dev environments via containers"
 license = "MIT"
+
+[[bin]]
+name = "jail"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
