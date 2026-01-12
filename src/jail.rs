@@ -22,16 +22,24 @@ pub struct JailMetadata {
     /// Ports to expose (for macOS)
     #[serde(default)]
     pub ports: Vec<u16>,
+    /// Workspace directory name (defaults to "workspace" for backward compatibility)
+    #[serde(default = "default_workspace_dir")]
+    pub workspace_dir: String,
+}
+
+fn default_workspace_dir() -> String {
+    "workspace".to_string()
 }
 
 impl JailMetadata {
-    fn new(source: &str, runtime: Runtime, ports: Vec<u16>) -> Self {
+    fn new(source: &str, runtime: Runtime, ports: Vec<u16>, workspace_dir: String) -> Self {
         Self {
             source: source.to_string(),
             container_id: None,
             runtime,
             created_at: chrono_now(),
             ports,
+            workspace_dir,
         }
     }
 
@@ -92,6 +100,11 @@ fn sanitize_container_name(name: &str) -> String {
     name.replace('/', "-").replace([':', '@', ' '], "_")
 }
 
+/// Extract repo name from jail name (e.g., "KMPARDS/timeally-react" -> "timeally-react")
+fn extract_repo_name(jail_name: &str) -> String {
+    jail_name.split('/').last().unwrap_or(jail_name).to_string()
+}
+
 /// Get the path to a specific jail
 fn jail_path(name: &str) -> Result<PathBuf> {
     Ok(jails_dir()?.join(name.replace('/', "_")))
@@ -120,8 +133,9 @@ pub fn clone(source: &str, name: Option<&str>, ports: Vec<u16>) -> Result<()> {
     // Ensure base image exists
     image::ensure(runtime)?;
 
-    // Create jail directory structure
-    let workspace_dir = jail_dir.join("workspace");
+    // Create jail directory structure using repo name
+    let workspace_name = extract_repo_name(&jail_name);
+    let workspace_dir = jail_dir.join(&workspace_name);
     std::fs::create_dir_all(&workspace_dir)
         .with_context(|| format!("Failed to create directory: {}", workspace_dir.display()))?;
 
@@ -149,7 +163,7 @@ pub fn clone(source: &str, name: Option<&str>, ports: Vec<u16>) -> Result<()> {
     }
 
     // Save metadata
-    let metadata = JailMetadata::new(source, runtime, ports);
+    let metadata = JailMetadata::new(source, runtime, ports, workspace_name);
     metadata.save(&jail_dir)?;
 
     println!(
@@ -177,13 +191,14 @@ pub fn create(name: &str, ports: Vec<u16>) -> Result<()> {
     // Ensure base image exists
     image::ensure(runtime)?;
 
-    // Create jail directory structure
-    let workspace_dir = jail_dir.join("workspace");
+    // Create jail directory structure using jail name
+    let workspace_name = name.to_string();
+    let workspace_dir = jail_dir.join(&workspace_name);
     std::fs::create_dir_all(&workspace_dir)
         .with_context(|| format!("Failed to create directory: {}", workspace_dir.display()))?;
 
     // Save metadata
-    let metadata = JailMetadata::new("(empty)", runtime, ports);
+    let metadata = JailMetadata::new("(empty)", runtime, ports, workspace_name);
     metadata.save(&jail_dir)?;
 
     println!(
@@ -374,7 +389,7 @@ fn get_or_create_container(
 ) -> Result<String> {
     let runtime = metadata.runtime;
     let container_name = format!("jail-{}", sanitize_container_name(name));
-    let workspace_dir = jail_dir.join("workspace");
+    let workspace_dir = jail_dir.join(&metadata.workspace_dir);
 
     // Check if container already exists
     let output = Command::new(runtime.command())
