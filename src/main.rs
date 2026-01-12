@@ -24,11 +24,17 @@ enum Commands {
         /// Name for the jail (default: derived from source)
         #[arg(short, long)]
         name: Option<String>,
+        /// Ports to expose (can be specified multiple times)
+        #[arg(short, long = "port", action = clap::ArgAction::Append)]
+        ports: Vec<u16>,
     },
     /// Create an empty jail
     Create {
         /// Name for the jail
         name: String,
+        /// Ports to expose (can be specified multiple times)
+        #[arg(short, long = "port", action = clap::ArgAction::Append)]
+        ports: Vec<u16>,
     },
     /// List all jails
     List,
@@ -36,10 +42,17 @@ enum Commands {
     Enter {
         /// Name or filter for the jail (interactive selection if multiple match)
         name: Option<String>,
+        /// Ports to expose (can be specified multiple times, will recreate container if needed)
+        #[arg(short, long = "port", action = clap::ArgAction::Append)]
+        ports: Vec<u16>,
     },
     /// Alias for enter
     #[command(hide = true)]
-    Start { name: Option<String> },
+    Start {
+        name: Option<String>,
+        #[arg(short, long = "port", action = clap::ArgAction::Append)]
+        ports: Vec<u16>,
+    },
     /// Remove a jail
     Remove {
         /// Name or filter for the jail (interactive selection if multiple match)
@@ -65,10 +78,16 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Clone { source, name } => jail::clone(&source, name.as_deref())?,
-        Commands::Create { name } => jail::create(&name)?,
+        Commands::Clone {
+            source,
+            name,
+            ports,
+        } => jail::clone(&source, name.as_deref(), ports)?,
+        Commands::Create { name, ports } => jail::create(&name, ports)?,
         Commands::List => jail::list()?,
-        Commands::Enter { name } | Commands::Start { name } => jail::enter(name.as_deref())?,
+        Commands::Enter { name, ports } | Commands::Start { name, ports } => {
+            jail::enter(name.as_deref(), ports)?
+        }
         Commands::Remove { name } => jail::remove(name.as_deref())?,
         Commands::Code { name } => jail::code(&name)?,
         Commands::Status => jail::status()?,

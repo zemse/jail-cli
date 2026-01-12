@@ -19,15 +19,19 @@ pub struct JailMetadata {
     pub runtime: Runtime,
     /// Creation timestamp
     pub created_at: String,
+    /// Ports to expose (for macOS)
+    #[serde(default)]
+    pub ports: Vec<u16>,
 }
 
 impl JailMetadata {
-    fn new(source: &str, runtime: Runtime) -> Self {
+    fn new(source: &str, runtime: Runtime, ports: Vec<u16>) -> Self {
         Self {
             source: source.to_string(),
             container_id: None,
             runtime,
             created_at: chrono_now(),
+            ports,
         }
     }
 
@@ -94,7 +98,7 @@ fn jail_path(name: &str) -> Result<PathBuf> {
 }
 
 /// Clone a repository into a new jail
-pub fn clone(source: &str, name: Option<&str>) -> Result<()> {
+pub fn clone(source: &str, name: Option<&str>, ports: Vec<u16>) -> Result<()> {
     let runtime = runtime::detect()?;
     let jail_name = name
         .map(String::from)
@@ -145,7 +149,7 @@ pub fn clone(source: &str, name: Option<&str>) -> Result<()> {
     }
 
     // Save metadata
-    let metadata = JailMetadata::new(source, runtime);
+    let metadata = JailMetadata::new(source, runtime, ports);
     metadata.save(&jail_dir)?;
 
     println!(
@@ -155,11 +159,11 @@ pub fn clone(source: &str, name: Option<&str>) -> Result<()> {
     );
 
     // Auto-enter the jail
-    enter_jail(&jail_name)
+    enter_jail(&jail_name, vec![])
 }
 
 /// Create an empty jail
-pub fn create(name: &str) -> Result<()> {
+pub fn create(name: &str, ports: Vec<u16>) -> Result<()> {
     let runtime = runtime::detect()?;
     let jail_dir = jail_path(name)?;
 
@@ -179,7 +183,7 @@ pub fn create(name: &str) -> Result<()> {
         .with_context(|| format!("Failed to create directory: {}", workspace_dir.display()))?;
 
     // Save metadata
-    let metadata = JailMetadata::new("(empty)", runtime);
+    let metadata = JailMetadata::new("(empty)", runtime, ports);
     metadata.save(&jail_dir)?;
 
     println!(
@@ -189,7 +193,7 @@ pub fn create(name: &str) -> Result<()> {
     );
 
     // Auto-enter the jail
-    enter_jail(name)
+    enter_jail(name, vec![])
 }
 
 /// Copy directory recursively
@@ -362,7 +366,13 @@ fn select_jail(filter: Option<&str>) -> Result<String> {
 }
 
 /// Get or create a container for a jail
-fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> Result<String> {
+fn get_or_create_container(
+    name: &str,
+    jail_dir: &PathBuf,
+    metadata: &JailMetadata,
+    force_recreate: bool,
+) -> Result<String> {
+    let runtime = metadata.runtime;
     let container_name = format!("jail-{}", sanitize_container_name(name));
     let workspace_dir = jail_dir.join("workspace");
 
@@ -374,6 +384,50 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
 
     if !output.stdout.is_empty() {
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if force_recreate {
+            // Need to recreate container with new ports - preserve state using docker commit
+            println!("{} Updating container with new ports...", "→".blue().bold());
+
+            // Stop container first
+            let _ = Command::new(runtime.command())
+                .args(["stop", &container_id])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+
+            // Commit container to preserve installed packages etc.
+            let temp_image = format!("jail-temp-{}", sanitize_container_name(name));
+            let commit_output = Command::new(runtime.command())
+                .args(["commit", &container_id, &temp_image])
+                .output()
+                .context("Failed to commit container")?;
+
+            if !commit_output.status.success() {
+                bail!(
+                    "Failed to preserve container state: {}",
+                    String::from_utf8_lossy(&commit_output.stderr)
+                );
+            }
+
+            // Remove old container
+            let _ = Command::new(runtime.command())
+                .args(["rm", &container_id])
+                .output();
+
+            // Create new container from committed image with new ports
+            let new_id =
+                create_container(name, &workspace_dir, metadata, runtime, Some(&temp_image))?;
+
+            // Remove temporary image
+            let _ = Command::new(runtime.command())
+                .args(["rmi", &temp_image])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output();
+
+            return Ok(new_id);
+        }
 
         // Start container if not running
         let running = Command::new(runtime.command())
@@ -391,6 +445,19 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
     }
 
     // Create new container
+    create_container(name, &workspace_dir, metadata, runtime, None)
+}
+
+/// Create a new container with the given configuration
+fn create_container(
+    name: &str,
+    workspace_dir: &PathBuf,
+    metadata: &JailMetadata,
+    runtime: Runtime,
+    base_image: Option<&str>,
+) -> Result<String> {
+    let container_name = format!("jail-{}", sanitize_container_name(name));
+
     let mut args = vec![
         "run".to_string(),
         "-d".to_string(),
@@ -399,11 +466,10 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
         container_name.clone(),
     ];
 
-    // Port mapping for dev servers
-    // On macOS, --network=host doesn't work (runs in VM), so we publish common ports
+    // Port mapping
     if cfg!(target_os = "macos") {
-        // Common dev server ports (5000 excluded - used by AirPlay on macOS)
-        for port in [3000, 3001, 4000, 4173, 5173, 5174, 8000, 8080, 8888, 9000] {
+        // On macOS, use explicit port mapping (--network=host doesn't work in VM)
+        for port in &metadata.ports {
             args.push("-p".to_string());
             args.push(format!("{}:{}", port, port));
         }
@@ -426,7 +492,8 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
         args.extend(ssh_args);
     }
 
-    args.push(IMAGE_NAME.to_string());
+    // Use custom base image if provided (from docker commit), otherwise use default
+    args.push(base_image.unwrap_or(IMAGE_NAME).to_string());
     args.push("/bin/bash".to_string());
 
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -443,36 +510,46 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
     }
 
     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    // Update metadata with container ID
-    if let Ok(mut metadata) = JailMetadata::load(jail_dir) {
-        metadata.container_id = Some(container_id.clone());
-        let _ = metadata.save(jail_dir);
-    }
-
     Ok(container_id)
 }
 
 /// Enter a jail's shell
-pub fn enter(filter: Option<&str>) -> Result<()> {
+pub fn enter(filter: Option<&str>, new_ports: Vec<u16>) -> Result<()> {
     let name = select_jail(filter)?;
-    enter_jail(&name)
+    enter_jail(&name, new_ports)
 }
 
 /// Internal function to enter a jail by name
-fn enter_jail(name: &str) -> Result<()> {
+fn enter_jail(name: &str, new_ports: Vec<u16>) -> Result<()> {
     let jail_dir = jail_path(name)?;
 
     if !jail_dir.exists() {
         bail!("Jail '{}' not found", name);
     }
 
-    let metadata = JailMetadata::load(&jail_dir)?;
+    let mut metadata = JailMetadata::load(&jail_dir)?;
+
+    // Check if we need to add new ports
+    let ports_changed = if !new_ports.is_empty() {
+        let mut changed = false;
+        for port in &new_ports {
+            if !metadata.ports.contains(port) {
+                metadata.ports.push(*port);
+                changed = true;
+            }
+        }
+        if changed {
+            metadata.save(&jail_dir)?;
+        }
+        changed
+    } else {
+        false
+    };
 
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(name, &jail_dir, metadata.runtime)?;
+    let container_id = get_or_create_container(name, &jail_dir, &metadata, ports_changed)?;
 
     println!("{} Entering jail '{}'...", "→".blue().bold(), name.cyan());
     println!("  Type '{}' to leave the jail", "exit".yellow());
@@ -546,7 +623,7 @@ pub fn code(name: &str) -> Result<()> {
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(name, &jail_dir, metadata.runtime)?;
+    let container_id = get_or_create_container(name, &jail_dir, &metadata, false)?;
 
     println!(
         "{} Opening VSCode for jail '{}'...",
