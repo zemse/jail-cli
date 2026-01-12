@@ -58,6 +58,9 @@ enum Commands {
         /// Name or filter for the jail (interactive selection if multiple match)
         name: Option<String>,
     },
+    /// Alias for remove
+    #[command(hide = true)]
+    Rm { name: Option<String> },
     /// Open VSCode attached to a jail's container
     Code {
         /// Name of the jail
@@ -88,7 +91,7 @@ fn run() -> Result<()> {
         Commands::Enter { name, ports } | Commands::Start { name, ports } => {
             jail::enter(name.as_deref(), ports)?
         }
-        Commands::Remove { name } => jail::remove(name.as_deref())?,
+        Commands::Remove { name } | Commands::Rm { name } => jail::remove(name.as_deref())?,
         Commands::Code { name } => jail::code(&name)?,
         Commands::Status => jail::status()?,
     }
