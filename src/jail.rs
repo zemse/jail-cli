@@ -311,26 +311,16 @@ fn select_jail(filter: Option<&str>) -> Result<String> {
             if filtered.is_empty() {
                 bail!("No jails match filter '{}'", f);
             }
-            // If exact match exists, return it directly
-            if filtered.len() == 1 || filtered.iter().any(|n| n.eq_ignore_ascii_case(f)) {
-                if let Some(exact) = filtered.iter().find(|n| n.eq_ignore_ascii_case(f)) {
-                    return Ok(exact.clone());
-                }
-                if filtered.len() == 1 {
-                    return Ok(filtered[0].clone());
-                }
+            // If exact match exists, return it directly (user typed full name)
+            if let Some(exact) = filtered.iter().find(|n| n.eq_ignore_ascii_case(f)) {
+                return Ok(exact.clone());
             }
             filtered
         }
         _ => all_names,
     };
 
-    // If only one candidate, return it directly
-    if candidates.len() == 1 {
-        return Ok(candidates[0].clone());
-    }
-
-    // Interactive selection
+    // Interactive selection (always show, even for single item)
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a jail")
         .items(&candidates)
