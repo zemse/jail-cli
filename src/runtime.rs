@@ -58,8 +58,12 @@ impl Runtime {
                 }
             }
             Runtime::Podman => {
-                // Podman forwards SSH_AUTH_SOCK through the VM
-                if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
+                // On macOS, Podman runs in a VM and can't directly mount host Unix sockets
+                // SSH agent forwarding requires special Podman machine configuration
+                if cfg!(target_os = "macos") {
+                    None
+                } else if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
+                    // On Linux, Podman can mount the SSH socket directly
                     Some(vec![
                         "-v".to_string(),
                         format!("{}:/run/ssh.sock:ro", sock),
