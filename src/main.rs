@@ -25,6 +25,11 @@ enum Commands {
         #[arg(short, long)]
         name: Option<String>,
     },
+    /// Create an empty jail
+    Create {
+        /// Name for the jail
+        name: String,
+    },
     /// List all jails
     List,
     /// Enter a jail's shell
@@ -61,6 +66,7 @@ fn run() -> Result<()> {
 
     match cli.command {
         Commands::Clone { source, name } => jail::clone(&source, name.as_deref())?,
+        Commands::Create { name } => jail::create(&name)?,
         Commands::List => jail::list()?,
         Commands::Enter { name } | Commands::Start { name } => jail::enter(name.as_deref())?,
         Commands::Remove { name } => jail::remove(name.as_deref())?,

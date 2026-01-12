@@ -161,6 +161,43 @@ pub fn clone(source: &str, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Create an empty jail
+pub fn create(name: &str) -> Result<()> {
+    let runtime = runtime::detect()?;
+    let jail_dir = jail_path(name)?;
+
+    // Check if jail already exists
+    if jail_dir.exists() {
+        bail!("Jail '{}' already exists", name);
+    }
+
+    println!("{} Creating jail '{}'", "→".blue().bold(), name.cyan());
+
+    // Ensure base image exists
+    image::ensure(runtime)?;
+
+    // Create jail directory structure
+    let workspace_dir = jail_dir.join("workspace");
+    std::fs::create_dir_all(&workspace_dir)
+        .with_context(|| format!("Failed to create directory: {}", workspace_dir.display()))?;
+
+    // Save metadata
+    let metadata = JailMetadata::new("(empty)", runtime);
+    metadata.save(&jail_dir)?;
+
+    println!(
+        "{} Jail '{}' created successfully",
+        "✓".green().bold(),
+        name.cyan()
+    );
+    println!(
+        "  Use '{}' to enter the jail",
+        format!("jail enter {}", name).yellow()
+    );
+
+    Ok(())
+}
+
 /// Copy directory recursively
 fn copy_dir_recursive(src: &str, dst: &PathBuf) -> Result<bool> {
     let status = Command::new("cp")
@@ -366,14 +403,29 @@ fn get_or_create_container(name: &str, jail_dir: &PathBuf, runtime: Runtime) -> 
         "-it".to_string(),
         "--name".to_string(),
         container_name.clone(),
-        "--network=host".to_string(), // Expose all ports for dev servers
+    ];
+
+    // Port mapping for dev servers
+    // On macOS, --network=host doesn't work (runs in VM), so we publish common ports
+    if cfg!(target_os = "macos") {
+        // Common dev server ports (5000 excluded - used by AirPlay on macOS)
+        for port in [3000, 3001, 4000, 4173, 5173, 5174, 8000, 8080, 8888, 9000] {
+            args.push("-p".to_string());
+            args.push(format!("{}:{}", port, port));
+        }
+    } else {
+        // On Linux, --network=host works directly
+        args.push("--network=host".to_string());
+    }
+
+    args.extend([
         "-v".to_string(),
         format!("{}:/workspace", workspace_dir.display()),
         "-w".to_string(),
         "/workspace".to_string(),
         "--user".to_string(),
         "dev".to_string(),
-    ];
+    ]);
 
     // Add SSH agent socket mount
     if let Some(ssh_args) = runtime.ssh_agent_mount() {
