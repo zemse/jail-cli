@@ -19,6 +19,9 @@ jail clone https://github.com/suspicious/malicious-repo
 # Expose ports for dev servers (macOS)
 jail enter -p 3000 -p 5173
 
+# Create empty container
+jail create myproject
+
 # Open VSCode attached to the container
 jail code myproject
 

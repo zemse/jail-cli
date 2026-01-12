@@ -66,8 +66,8 @@ enum Commands {
     Rm { name: Option<String> },
     /// Open VSCode attached to a jail's container
     Code {
-        /// Name of the jail
-        name: String,
+        /// Name or filter for the jail (interactive selection if multiple match)
+        name: Option<String>,
     },
     /// Check runtime health status
     Status,
@@ -95,7 +95,7 @@ fn run() -> Result<()> {
             jail::enter(name.as_deref(), ports)?
         }
         Commands::Remove { name } | Commands::Rm { name } => jail::remove(name.as_deref())?,
-        Commands::Code { name } => jail::code(&name)?,
+        Commands::Code { name } => jail::code(name.as_deref())?,
         Commands::Status => jail::status()?,
     }
 

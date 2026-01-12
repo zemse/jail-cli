@@ -627,19 +627,16 @@ pub fn remove(filter: Option<&str>) -> Result<()> {
 }
 
 /// Open VSCode attached to a jail's container
-pub fn code(name: &str) -> Result<()> {
-    let jail_dir = jail_path(name)?;
-
-    if !jail_dir.exists() {
-        bail!("Jail '{}' not found", name);
-    }
+pub fn code(filter: Option<&str>) -> Result<()> {
+    let name = select_jail(filter)?;
+    let jail_dir = jail_path(&name)?;
 
     let metadata = JailMetadata::load(&jail_dir)?;
 
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(name, &jail_dir, &metadata, false)?;
+    let container_id = get_or_create_container(&name, &jail_dir, &metadata, false)?;
 
     println!(
         "{} Opening VSCode for jail '{}'...",
