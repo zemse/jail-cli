@@ -7,6 +7,7 @@ use std::process::Command;
 pub enum Runtime {
     Podman,
     Docker,
+    Tart,
 }
 
 impl Runtime {
@@ -14,7 +15,13 @@ impl Runtime {
         match self {
             Runtime::Podman => "podman",
             Runtime::Docker => "docker",
+            Runtime::Tart => "tart",
         }
+    }
+
+    /// Whether this runtime uses containers (Docker/Podman) vs VMs (Tart)
+    pub fn is_container_runtime(&self) -> bool {
+        matches!(self, Runtime::Podman | Runtime::Docker)
     }
 
     /// Check if this runtime is available and working
@@ -24,19 +31,38 @@ impl Runtime {
             return false;
         }
 
-        // Check if the runtime is actually working
-        Command::new(cmd)
-            .args(["info"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        match self {
+            Runtime::Tart => {
+                // Tart is macOS-only (Apple Silicon)
+                if !cfg!(target_os = "macos") {
+                    return false;
+                }
+                // Quick check: tart list should work if tart is installed
+                Command::new(cmd)
+                    .args(["list"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            }
+            _ => Command::new(cmd)
+                .args(["info"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false),
+        }
     }
 
     /// Get SSH agent socket mount arguments for this runtime
     pub fn ssh_agent_mount(&self) -> Option<Vec<String>> {
         match self {
+            Runtime::Tart => {
+                // Tart VMs are accessed via SSH, which handles agent forwarding natively
+                None
+            }
             Runtime::Docker => {
                 // Docker Desktop on macOS uses a special path
                 if cfg!(target_os = "macos") {
@@ -88,14 +114,16 @@ impl std::fmt::Display for Runtime {
 fn install_instructions() -> &'static str {
     match std::env::consts::OS {
         "macos" => {
-            "Install a container runtime:\n\n\
+            "Install a container or VM runtime:\n\n\
              Podman (recommended):\n  \
              brew install podman\n  \
              podman machine init\n  \
              podman machine start\n\n\
              Docker Desktop:\n  \
              brew install --cask docker\n  \
-             # Then launch Docker.app"
+             # Then launch Docker.app\n\n\
+             Tart (macOS VMs on Apple Silicon):\n  \
+             brew install cirruslabs/cli/tart"
         }
         "linux" => {
             "Install a container runtime:\n\n\
@@ -106,7 +134,7 @@ fn install_instructions() -> &'static str {
              Docker:\n  \
              See https://docs.docker.com/engine/install/"
         }
-        _ => "Please install Docker or Podman for your platform.",
+        _ => "Please install Docker, Podman, or Tart for your platform.",
     }
 }
 
@@ -123,13 +151,17 @@ pub fn detect() -> Result<Runtime> {
         );
     }
 
-    // Prefer Podman if available
+    // Prefer container runtimes (Podman > Docker), fall back to Tart
     if Runtime::Podman.is_available() {
         return Ok(Runtime::Podman);
     }
 
     if Runtime::Docker.is_available() {
         return Ok(Runtime::Docker);
+    }
+
+    if Runtime::Tart.is_available() {
+        return Ok(Runtime::Tart);
     }
 
     bail!("No container runtime found.\n\n{}", install_instructions())
@@ -143,5 +175,13 @@ mod tests {
     fn test_runtime_command() {
         assert_eq!(Runtime::Docker.command(), "docker");
         assert_eq!(Runtime::Podman.command(), "podman");
+        assert_eq!(Runtime::Tart.command(), "tart");
+    }
+
+    #[test]
+    fn test_is_container_runtime() {
+        assert!(Runtime::Docker.is_container_runtime());
+        assert!(Runtime::Podman.is_container_runtime());
+        assert!(!Runtime::Tart.is_container_runtime());
     }
 }

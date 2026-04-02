@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::jails_dir;
-use crate::image::{self, IMAGE_NAME};
+use crate::image::{self, IMAGE_NAME, TART_BASE_VM};
 use crate::runtime::{self, Runtime};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -264,7 +264,13 @@ pub fn list() -> Result<()> {
         let name = entry.file_name().to_string_lossy().replace('_', "/");
 
         if let Ok(metadata) = JailMetadata::load(&jail_dir) {
-            let status = if is_container_running(&name, metadata.runtime)? {
+            let status = if !metadata.runtime.is_container_runtime() {
+                if is_tart_vm_running(&tart_vm_name(&name))? {
+                    "running".green()
+                } else {
+                    "stopped".yellow()
+                }
+            } else if is_container_running(&name, metadata.runtime)? {
                 "running".green()
             } else {
                 "stopped".yellow()
@@ -529,6 +535,150 @@ fn create_container(
     Ok(container_id)
 }
 
+// --- Tart VM management ---
+
+/// Get the Tart VM name for a jail
+fn tart_vm_name(jail_name: &str) -> String {
+    format!("jail-{}", sanitize_container_name(jail_name))
+}
+
+/// Check if a Tart VM exists
+fn tart_vm_exists(vm_name: &str) -> Result<bool> {
+    let output = Command::new("tart")
+        .args(["get", vm_name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to check Tart VM")?;
+    Ok(output.success())
+}
+
+/// Check if a Tart VM is currently running
+fn is_tart_vm_running(vm_name: &str) -> Result<bool> {
+    let output = Command::new("tart")
+        .args(["list", "--format", "json"])
+        .output()
+        .context("Failed to list Tart VMs")?;
+
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    // Parse JSON output to check if VM is running
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Each entry has "Name" and "State" fields
+    // Look for our VM name and check if state is "running"
+    Ok(stdout.contains(&format!("\"{}\"", vm_name)) && stdout.contains("\"running\""))
+}
+
+/// Get or create a Tart VM for a jail, returning the VM name
+fn get_or_create_tart_vm(
+    name: &str,
+    jail_dir: &PathBuf,
+    metadata: &JailMetadata,
+) -> Result<String> {
+    let vm_name = tart_vm_name(name);
+    let workspace_dir = jail_dir.join(&metadata.workspace_dir);
+
+    if !tart_vm_exists(&vm_name)? {
+        println!(
+            "{} Creating Tart VM '{}'...",
+            "→".blue().bold(),
+            vm_name.cyan()
+        );
+
+        let status = Command::new("tart")
+            .args(["clone", TART_BASE_VM, &vm_name])
+            .status()
+            .context("Failed to clone Tart VM")?;
+
+        if !status.success() {
+            bail!("Failed to create Tart VM '{}'", vm_name);
+        }
+    }
+
+    // Start VM if not running
+    if !is_tart_vm_running(&vm_name)? {
+        println!("{} Starting Tart VM...", "→".blue().bold());
+
+        let mut run_args = vec![
+            "run".to_string(),
+            "--no-graphics".to_string(),
+            format!("--dir=workspace:{}", workspace_dir.display()),
+        ];
+
+        // Add port forwarding via Tart's softnet (if ports configured)
+        for port in &metadata.ports {
+            run_args.push(format!("--net-softnet-allow={}:{}", port, port));
+        }
+
+        run_args.push(vm_name.clone());
+
+        let args_ref: Vec<&str> = run_args.iter().map(|s| s.as_str()).collect();
+        Command::new("tart")
+            .args(&args_ref)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Failed to start Tart VM")?;
+
+        // Wait for VM to get an IP
+        println!("{} Waiting for VM to boot...", "→".blue().bold());
+        image::tart_wait_for_ip(&vm_name, 120)?;
+    }
+
+    Ok(vm_name)
+}
+
+/// SSH into a Tart VM as the dev user
+fn tart_ssh_enter(vm_name: &str) -> Result<std::process::ExitStatus> {
+    let ip = image::tart_wait_for_ip(vm_name, 30)?;
+
+    // Mount the shared workspace inside the VM and enter as dev user
+    // The --dir=workspace:<path> makes it available via virtiofs tag "workspace"
+    let mount_and_enter = "sudo mkdir -p /workspace && \
+        (mountpoint -q /workspace || sudo mount -t virtiofs workspace /workspace) && \
+        sudo chown dev:dev /workspace && \
+        exec sudo -u dev bash -c 'cd /workspace && exec bash -l'";
+
+    Command::new("ssh")
+        .args([
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-A", // Forward SSH agent
+            "-t", // Force TTY allocation
+            &format!("admin@{}", ip),
+            mount_and_enter,
+        ])
+        .status()
+        .context("Failed to SSH into Tart VM")
+}
+
+/// Stop a Tart VM
+fn tart_stop(vm_name: &str) {
+    let _ = Command::new("tart")
+        .args(["stop", vm_name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Delete a Tart VM
+fn tart_delete(vm_name: &str) {
+    tart_stop(vm_name);
+    let _ = Command::new("tart")
+        .args(["delete", vm_name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+// --- End Tart VM management ---
+
 /// Enter a jail's shell
 pub fn enter(filter: Option<&str>, new_ports: Vec<u16>) -> Result<()> {
     let name = select_jail(filter)?;
@@ -565,27 +715,42 @@ fn enter_jail(name: &str, new_ports: Vec<u16>) -> Result<()> {
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(name, &jail_dir, &metadata, ports_changed)?;
-
     println!("{} Entering jail '{}'...", "→".blue().bold(), name.cyan());
     println!("  Type '{}' to leave the jail", "exit".yellow());
 
-    // Exec into container
-    let status = Command::new(metadata.runtime.command())
-        .args(["exec", "-it", &container_id, "/bin/bash"])
-        .status()
-        .context("Failed to enter container")?;
+    if !metadata.runtime.is_container_runtime() {
+        // Tart VM: start VM and SSH in
+        let vm_name = get_or_create_tart_vm(name, &jail_dir, &metadata)?;
 
-    // Stop container after exiting shell to free resources
-    println!("{} Stopping container...", "→".blue().bold());
-    let _ = Command::new(metadata.runtime.command())
-        .args(["stop", &container_id])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        let status = tart_ssh_enter(&vm_name)?;
 
-    if !status.success() {
-        bail!("Shell exited with error");
+        // Stop VM after exiting shell to free resources
+        println!("{} Stopping VM...", "→".blue().bold());
+        tart_stop(&vm_name);
+
+        if !status.success() {
+            bail!("Shell exited with error");
+        }
+    } else {
+        // Container runtime: exec into container
+        let container_id = get_or_create_container(name, &jail_dir, &metadata, ports_changed)?;
+
+        let status = Command::new(metadata.runtime.command())
+            .args(["exec", "-it", &container_id, "/bin/bash"])
+            .status()
+            .context("Failed to enter container")?;
+
+        // Stop container after exiting shell to free resources
+        println!("{} Stopping container...", "→".blue().bold());
+        let _ = Command::new(metadata.runtime.command())
+            .args(["stop", &container_id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        if !status.success() {
+            bail!("Shell exited with error");
+        }
     }
 
     Ok(())
@@ -602,19 +767,23 @@ pub fn remove(filter: Option<&str>) -> Result<()> {
 
     println!("{} Removing jail '{}'...", "→".blue().bold(), name.cyan());
 
-    // Try to stop and remove container
+    // Try to stop and remove container/VM
     if let Ok(metadata) = JailMetadata::load(&jail_dir) {
-        let container_name = format!("jail-{}", sanitize_container_name(&name));
+        if !metadata.runtime.is_container_runtime() {
+            tart_delete(&tart_vm_name(&name));
+        } else {
+            let container_name = format!("jail-{}", sanitize_container_name(&name));
 
-        // Stop container (ignore errors)
-        let _ = Command::new(metadata.runtime.command())
-            .args(["stop", &container_name])
-            .output();
+            // Stop container (ignore errors)
+            let _ = Command::new(metadata.runtime.command())
+                .args(["stop", &container_name])
+                .output();
 
-        // Remove container (ignore errors)
-        let _ = Command::new(metadata.runtime.command())
-            .args(["rm", &container_name])
-            .output();
+            // Remove container (ignore errors)
+            let _ = Command::new(metadata.runtime.command())
+                .args(["rm", &container_name])
+                .output();
+        }
     }
 
     // Remove jail directory
@@ -626,7 +795,7 @@ pub fn remove(filter: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Open VSCode attached to a jail's container
+/// Open VSCode attached to a jail's container or VM
 pub fn code(filter: Option<&str>) -> Result<()> {
     let name = select_jail(filter)?;
     let jail_dir = jail_path(&name)?;
@@ -636,36 +805,65 @@ pub fn code(filter: Option<&str>) -> Result<()> {
     // Ensure image exists
     image::ensure(metadata.runtime)?;
 
-    let container_id = get_or_create_container(&name, &jail_dir, &metadata, false)?;
+    if !metadata.runtime.is_container_runtime() {
+        // Tart: use Remote SSH
+        let vm_name = get_or_create_tart_vm(&name, &jail_dir, &metadata)?;
+        let ip = image::tart_wait_for_ip(&vm_name, 30)?;
 
-    println!(
-        "{} Opening VSCode for jail '{}'...",
-        "→".blue().bold(),
-        name.cyan()
-    );
+        println!(
+            "{} Opening VSCode for jail '{}' (via SSH)...",
+            "→".blue().bold(),
+            name.cyan()
+        );
 
-    // Use container ID for VSCode URI
-    let hex_id = hex_encode(&container_id);
-    let workdir = format!("/{}", metadata.workspace_dir);
-    let uri = format!("vscode-remote://attached-container+{}{}", hex_id, workdir);
+        let uri = format!("vscode-remote://ssh-remote+admin@{}/workspace", ip);
+        println!("  VM: {} ({})", vm_name.dimmed(), ip.dimmed());
+        println!("  URI: {}", uri.dimmed());
 
-    println!("  Container: {}", container_id.dimmed());
-    println!("  URI: {}", uri.dimmed());
+        let status = Command::new("code")
+            .args(["--folder-uri", &uri])
+            .status()
+            .context("Failed to open VSCode. Make sure 'code' command is available.")?;
 
-    // Open VSCode
-    let status = Command::new("code")
-        .args(["--folder-uri", &uri])
-        .status()
-        .context("Failed to open VSCode. Make sure 'code' command is available.")?;
+        if !status.success() {
+            bail!("Failed to open VSCode");
+        }
 
-    if !status.success() {
-        bail!("Failed to open VSCode");
+        println!(
+            "{} VSCode opened. Make sure you have the 'Remote - SSH' extension installed.",
+            "✓".green().bold()
+        );
+    } else {
+        // Container: use Dev Containers
+        let container_id = get_or_create_container(&name, &jail_dir, &metadata, false)?;
+
+        println!(
+            "{} Opening VSCode for jail '{}'...",
+            "→".blue().bold(),
+            name.cyan()
+        );
+
+        let hex_id = hex_encode(&container_id);
+        let workdir = format!("/{}", metadata.workspace_dir);
+        let uri = format!("vscode-remote://attached-container+{}{}", hex_id, workdir);
+
+        println!("  Container: {}", container_id.dimmed());
+        println!("  URI: {}", uri.dimmed());
+
+        let status = Command::new("code")
+            .args(["--folder-uri", &uri])
+            .status()
+            .context("Failed to open VSCode. Make sure 'code' command is available.")?;
+
+        if !status.success() {
+            bail!("Failed to open VSCode");
+        }
+
+        println!(
+            "{} VSCode opened. Make sure you have the 'Dev Containers' extension installed.",
+            "✓".green().bold()
+        );
     }
-
-    println!(
-        "{} VSCode opened. Make sure you have the 'Dev Containers' extension installed.",
-        "✓".green().bold()
-    );
 
     Ok(())
 }
@@ -703,23 +901,46 @@ pub fn status() -> Result<()> {
         println!("{}", "not installed".dimmed());
     }
 
+    // Check Tart
+    print!("  Tart:   ");
+    if Runtime::Tart.is_available() {
+        println!("{}", "available ✓".green());
+    } else if which::which("tart").is_ok() {
+        if cfg!(target_os = "macos") {
+            println!("{}", "installed ✓".green());
+        } else {
+            println!("{}", "installed (macOS only)".yellow());
+        }
+    } else {
+        println!("{}", "not installed".dimmed());
+    }
+
     println!();
 
     // Show active runtime
     match runtime::detect() {
         Ok(rt) => println!("  Active runtime: {}", rt.to_string().green().bold()),
-        Err(_) => println!("  {}", "No container runtime available!".red().bold()),
+        Err(_) => println!("  {}", "No runtime available!".red().bold()),
     }
 
     println!();
 
-    // Check base image
+    // Check base image/VM
     if let Ok(rt) = runtime::detect() {
-        print!("  Base image ({}): ", IMAGE_NAME);
-        if image::exists(rt)? {
-            println!("{}", "exists ✓".green());
+        if !rt.is_container_runtime() {
+            print!("  Base VM ({}): ", image::TART_BASE_VM);
+            if image::tart_base_exists()? {
+                println!("{}", "exists ✓".green());
+            } else {
+                println!("{}", "not built (will build on first use)".yellow());
+            }
         } else {
-            println!("{}", "not built (will build on first use)".yellow());
+            print!("  Base image ({}): ", IMAGE_NAME);
+            if image::exists(rt)? {
+                println!("{}", "exists ✓".green());
+            } else {
+                println!("{}", "not built (will build on first use)".yellow());
+            }
         }
     }
 
@@ -759,5 +980,11 @@ mod tests {
     #[test]
     fn test_hex_encode() {
         assert_eq!(hex_encode("abc"), "616263");
+    }
+
+    #[test]
+    fn test_tart_vm_name() {
+        assert_eq!(tart_vm_name("owner/repo"), "jail-owner-repo");
+        assert_eq!(tart_vm_name("myproject"), "jail-myproject");
     }
 }
